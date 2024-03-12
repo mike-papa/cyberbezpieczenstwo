@@ -1,8 +1,11 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 import jwt
 from flask_mysqldb import MySQL # do połączenia z bazą danych
 import bcrypt # do szyfrowania haseł
-
+import pyotp # do generowania kodów TOTP
+import qrcode # do generowania kodu QR
+import base64 # do kodowania obrazu w formacie base64
+from io import BytesIO # do zapisu obrazu w pamięci
 
 app = Flask(__name__)
 
@@ -39,13 +42,33 @@ def register():
     # Haszowanie hasła użytkownika za pomocą funkcji bcrypt
     hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
+    # Generowanie klucza dla Google Authenticator i zapisywanie go w bazie danych
+    auth_secret_key = pyotp.random_base32()
+
     # Dodawanie nowego użytkownika do bazy danych
-    cur.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (username, hashed_password))
+    cur.execute("INSERT INTO users (username, password, auth_secret_key) VALUES (%s, %s, %s)",
+                (username, hashed_password, auth_secret_key))
     mysql.connection.commit()
     cur.close()
 
-    # Zwracanie informacji o pomyślnej rejestracji
-    return jsonify({"message": "User registered successfully"}), 201
+    # Generowanie URL z kluczem dla aplikacji Google Authenticator
+    totp = pyotp.totp.TOTP(auth_secret_key)
+    otp_url = totp.provisioning_uri(username, issuer_name="CyberSecurity Lab")
+
+    # Generowanie kodu QR dla URL z kluczem dla aplikacji Google Authenticator
+    qr = qrcode.make(otp_url)
+
+    # Zapisywanie kodu QR do bufora jako plik PNG
+    buffer = BytesIO()
+    qr.save(buffer)
+
+    # Kodowanie obrazka QR w formacie base64
+    qr_image_data = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    # Tworzenie odpowiedzi HTTP i ustawianie nagłówka Content-Type na obraz PNG
+    response = make_response(base64.b64decode(qr_image_data))
+    response.headers.set('Content-Type', 'image/png')
+    return response
 
 # Funkcja do logowania użytkownika
 @app.route("/login", methods=["POST"])
@@ -60,14 +83,26 @@ def login():
     user = cur.fetchone()
     cur.close()
 
-    # Sprawdzanie hasła użytkownika
-    if user and bcrypt.checkpw(password.encode("utf-8"), user["password"].encode("utf-8")):
-        # Generowanie tokenu JWT
-        token = jwt.encode({"username": username}, secret_key, algorithm="HS256")
-        return jsonify({"token": token})
+    auth_code = request.json.get("auth_code")  # nowy parametr - kod z aplikacji Google Authenticator
+
+    if user:
+        # Sprawdzanie hasła użytkownika
+        if bcrypt.checkpw(password.encode("utf-8"), user["password"].encode("utf-8")):
+            # Sprawdzanie kodu uwierzytelniającego z aplikacji Google Authenticator
+            totp = pyotp.TOTP(user["auth_secret_key"])
+            if totp.verify(auth_code):
+                # Generowanie tokenu JWT
+                token = jwt.encode({"username": username}, secret_key, algorithm="HS256")
+                return jsonify({"token": token})
+            else:
+                # Zwracanie komunikatu o błędzie, jeśli kod uwierzytelniający jest niepoprawny
+                return jsonify({"message": "Wrong authentication code"}), 401
+        else:
+            # Zwracanie komunikatu o błędzie, jeśli hasło jest niepoprawne
+            return jsonify({"message": "Wrong password"}), 401
     else:
-        # Zwracanie komunikatu o błędzie, jeśli dane są niepoprawne
-        return jsonify({"message": "Wrong username or password"}), 401
+        # Zwracanie komunikatu o błędzie, jeśli użytkownik nie istnieje
+        return jsonify({"message": "User does not exist"}), 401
 
 # Funkcja do weryfikacji tokenu JWT
 def verify_token(token):
