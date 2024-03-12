@@ -1,10 +1,51 @@
 from flask import Flask, request, jsonify
 import jwt
+from flask_mysqldb import MySQL # do połączenia z bazą danych
+import bcrypt # do szyfrowania haseł
+
 
 app = Flask(__name__)
 
+# Konfiguracja bazy danych
+app.config["MYSQL_USER"] = "root" # nazwa użytkownika
+app.config["MYSQL_PASSWORD"] = "12345" # hasło do bazy danych
+app.config["MYSQL_DB"] = "cyberbezpieczenstwo_db" # nazwa bazy danych
+app.config["MYSQL_CURSORCLASS"] = "DictCursor" # zwraca słownik zamiast tupli (krotki) - czyli zamiast (1, "Jan") zwraca {"id": 1, "name": "Jan"}
+app.config["MYSQL_HOST"] = "127.0.0.1" # adres serwera bazy danych
+
+# Inicjalizacja połączenia z bazą danych
+mysql = MySQL(app)
+
+
+
 # Klucz secret do generowania i weryfikacji tokenów JWT
 secret_key = "secret_key"
+
+# Funkcja do rejestracji użytkownika
+@app.route("/register", methods=["POST"])
+def register():
+    # Pobieranie danych użytkownika z żądania
+    username = request.json.get("username")
+    password = request.json.get("password")
+
+    # Sprawdzanie, czy użytkownik już istnieje w bazie danych
+    cur = mysql.connection.cursor()
+    cur.execute("SELECT * FROM users WHERE username = %s", [username])
+    user = cur.fetchone()
+    if user:
+        cur.close()
+        return jsonify({"message": "User already exists"}), 400
+
+    # Haszowanie hasła użytkownika za pomocą funkcji bcrypt
+    hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+    # Dodawanie nowego użytkownika do bazy danych
+    cur.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (username, hashed_password))
+    mysql.connection.commit()
+    cur.close()
+
+    # Zwracanie informacji o pomyślnej rejestracji
+    return jsonify({"message": "User registered successfully"}), 201
 
 # Funkcja do logowania użytkownika
 @app.route("/login", methods=["POST"])
@@ -13,9 +54,14 @@ def login():
     username = request.json.get("username")
     password = request.json.get("password")
 
-    # Weryfikacja danych użytkownika (to tylko przykład,
-    # prawdziwe weryfikacje powinno się wykonywać z bazy danych)
-    if username == "user" and password == "password":
+    # Wyszukiwanie użytkownika w bazie danych
+    cur = mysql.connection.cursor()
+    cur.execute("SELECT * FROM users WHERE username = %s", [username])
+    user = cur.fetchone()
+    cur.close()
+
+    # Sprawdzanie hasła użytkownika
+    if user and bcrypt.checkpw(password.encode("utf-8"), user["password"].encode("utf-8")):
         # Generowanie tokenu JWT
         token = jwt.encode({"username": username}, secret_key, algorithm="HS256")
         return jsonify({"token": token})
