@@ -13,6 +13,7 @@ from cryptography.x509.oid import NameOID
 from cryptography import x509
 from datetime import datetime, timedelta
 import uuid
+from multiprocessing import Process
 
 app = Flask(__name__)
 
@@ -181,6 +182,12 @@ def generate_self_signed_cert():
         'cert_pem': base64.b64encode(cert_pem).decode(),
         'private_key_pem': base64.b64encode(private_key_pem).decode()
     }
+    # Zapis certyfikatu i klucza prywatnego do plików
+    with open('cert.pem', 'wb') as cert_file:
+        cert_file.write(cert_pem)
+
+    with open('key.pem', 'wb') as key_file:
+        key_file.write(private_key_pem)
 
     return jsonify(result)
 @app.route('/get_cert_info', methods=['POST'])
@@ -256,5 +263,16 @@ def decrypt_with_cert():
     return jsonify(result)
 
 # Uruchomienie aplikacji
+def run_http():
+    app.run(port=5080)
+
+def run_https():
+    app.run(ssl_context=('cert.pem', 'key.pem'), port=5443)
+
 if __name__ == '__main__':
-    app.run()
+    http_process = Process(target=run_http)
+    https_process = Process(target=run_https)
+    http_process.start()
+    https_process.start()
+    http_process.join()
+    https_process.join()
